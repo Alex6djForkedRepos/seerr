@@ -1,3 +1,4 @@
+import type { JellyfinLibrary } from '@server/api/jellyfin';
 import JellyfinAPI from '@server/api/jellyfin';
 import PlexAPI from '@server/api/plexapi';
 import PlexTvAPI from '@server/api/plextv';
@@ -263,7 +264,7 @@ settingsRoutes.put('/plex/library/:libraryId', async (req, res, next) => {
   return res.status(200).json(library);
 });
 
-settingsRoutes.post('/plex/library/sync', async (_req, res) => {
+settingsRoutes.post('/plex/library/sync', async (_req, res, next) => {
   const settings = getSettings();
 
   const userRepository = getRepository(User);
@@ -273,7 +274,14 @@ settingsRoutes.post('/plex/library/sync', async (_req, res) => {
   });
   const plexapi = new PlexAPI({ plexToken: admin.plexToken });
 
-  await plexapi.syncLibraries();
+  try {
+    await plexapi.syncLibraries();
+  } catch (e) {
+    return next({
+      status: e.statusCode ?? 500,
+      message: e.errorCode ?? ApiErrorCode.Unknown,
+    });
+  }
 
   return res.status(200).json(settings.plex.libraries);
 });
@@ -400,22 +408,31 @@ settingsRoutes.post('/jellyfin/library/sync', async (_req, res, next) => {
 
   jellyfinClient.setUserId(admin.jellyfinUserId ?? '');
 
-  const libraries = await jellyfinClient.getLibraries();
+  let libraries: JellyfinLibrary[];
 
-  if (libraries.length === 0) {
-    // Check if no libraries are found due to the fallback to user views
-    // This only affects LDAP users
-    const account = await jellyfinClient.getUser();
+  try {
+    libraries = await jellyfinClient.getLibraries();
 
-    // Automatic Library grouping is not supported when user views are used to get library
-    if (account.Configuration.GroupedFolders?.length > 0) {
-      return next({
-        status: 501,
-        message: ApiErrorCode.SyncErrorGroupedFolders,
-      });
+    if (libraries.length === 0) {
+      // Check if no libraries are found due to the fallback to user views
+      // This only affects LDAP users
+      const account = await jellyfinClient.getUser();
+
+      // Automatic Library grouping is not supported when user views are used to get library
+      if (account.Configuration.GroupedFolders?.length > 0) {
+        return next({
+          status: 501,
+          message: ApiErrorCode.SyncErrorGroupedFolders,
+        });
+      }
+
+      return next({ status: 404, message: ApiErrorCode.SyncErrorNoLibraries });
     }
-
-    return next({ status: 404, message: ApiErrorCode.SyncErrorNoLibraries });
+  } catch (e) {
+    return next({
+      status: e.statusCode ?? 500,
+      message: e.errorCode ?? ApiErrorCode.Unknown,
+    });
   }
 
   const newLibraries: Library[] = libraries.map((library) => {
